@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const cors = require('cors'); // <--- AÑADIDO
 
 const productRoutes = require('./routes/productRoutes');
+const settingsRoutes = require('./routes/settingsRoutes');  // <--- agregar esta línea
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .catch(err => console.log("Error en conexión:", err));
 
 app.use('/api/products', productRoutes); // Ruta activa
+app.use('/api/settings', settingsRoutes);                  // ✅ NUEVA LÍNEA
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
