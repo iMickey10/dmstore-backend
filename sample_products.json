@@ -1,0 +1,38 @@
+[
+  {
+    "name": "Espuma limpiadora facial",
+    "brand": "CeraVe",
+    "price": 180.0,
+    "stock": 25,
+    "weight_grams": 150,
+    "image": "https://example.com/images/espuma_cerave.jpg",
+    "category": "Limpiadores"
+  },
+  {
+    "name": "Protector solar SPF 50",
+    "brand": "La Roche-Posay",
+    "price": 320.0,
+    "stock": 18,
+    "weight_grams": 50,
+    "image": "https://example.com/images/protector_lrp.jpg",
+    "category": "Protección solar"
+  },
+  {
+    "name": "Sérum de ácido hialurónico",
+    "brand": "The Ordinary",
+    "price": 250.0,
+    "stock": 12,
+    "weight_grams": 30,
+    "image": "https://example.com/images/serum_to.jpg",
+    "category": "Tratamientos"
+  },
+  {
+    "name": "Crema hidratante",
+    "brand": "Neutrogena",
+    "price": 210.0,
+    "stock": 30,
+    "weight_grams": 100,
+    "image": "https://example.com/images/crema_neutrogena.jpg",
+    "category": "Hidratación"
+  }
+]
