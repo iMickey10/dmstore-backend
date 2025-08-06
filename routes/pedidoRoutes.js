@@ -17,7 +17,7 @@ router.post('/', async (req, res) => {
       }
 
       if (productoDB.stock < p.cantidad) {
-        return res.status(400).json({ error: `Lo sentimos no hay suficiente stock para "${productoDB.name}". Tan solo hace unos segundos se agotaron las ultimas unidades.` });
+        return res.status(400).json({ error: `Lo sentimos no hay suficiente stock para "${productoDB.name}". Tan solo hace unos segundos estaban disponibles las unidades que requerias, por el momento solo quedan ${productoDB.stock} unidades, Favor de regresar al catalogo y modifica tu carrito` });
       }
     }
 
