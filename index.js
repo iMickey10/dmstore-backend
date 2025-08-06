@@ -5,6 +5,8 @@ const cors = require('cors'); // <--- AÑADIDO
 
 const productRoutes = require('./routes/productRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');  // <--- agregar esta línea
+const pedidoRoutes = require('./routes/pedidoRoutes');
+
 
 dotenv.config();
 
@@ -18,8 +20,11 @@ mongoose.connect(process.env.MONGODB_URI)
 
 app.use('/api/products', productRoutes); // Ruta activa
 app.use('/api/settings', settingsRoutes);                  // ✅ NUEVA LÍNEA
+app.use('/api/pedidos', pedidoRoutes);
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Servidor escuchando en puerto ${PORT}`);
 });
+
