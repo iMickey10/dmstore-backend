@@ -4,6 +4,8 @@ const router = express.Router();
 const Pedido = require('../models/Pedido');
 const Product = require('../models/Product');
 const nodemailer = require('nodemailer');
+const mongoose = require('mongoose');
+
 
 // Genera número de pedido SIN fecha: DM-XXXXXX
 function buildOrderNumber(docId) {
