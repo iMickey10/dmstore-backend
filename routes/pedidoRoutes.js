@@ -54,6 +54,16 @@ function buildProductsTableHTML(productos, totalGeneral, pesoTotalKg) {
   `;
 }
 
+router.get('/', async (req, res) => {
+  try {
+    const pedidos = await Pedido.find().sort({ createdAt: -1 });
+    res.json(pedidos);
+  } catch (err) {
+    res.status(500).json({ error: 'Error al obtener los pedidos' });
+  }
+});
+
+
 router.post('/', async (req, res) => {
   try {
     const { nombre, celular, correo, direccion, productos, pesoTotal, total } = req.body;
