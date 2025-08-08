@@ -216,6 +216,160 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// PUT /api/pedidos/:id  — Editar pedido, validar y ajustar stock, recalcular totales y peso
+router.put('/:id', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const pedidoId = req.params.id;
+    const { nombre, celular, correo, direccion, productos: productosEditados } = req.body;
+
+    // 1) Traer pedido actual
+    const pedidoActual = await Pedido.findById(pedidoId).session(session);
+    if (!pedidoActual) {
+      await session.abortTransaction();
+      return res.status(404).json({ error: 'Pedido no encontrado' });
+    }
+
+    // 2) Mapas para comparar cantidades
+    // oldMap: { productId -> qtyAnterior }
+    const oldMap = new Map();
+    for (const linea of pedidoActual.productos) {
+      // Asegúrate que id sea el campo con el _id del producto
+      oldMap.set(String(linea.id), linea.cantidad);
+    }
+
+    // newMap: { productId -> qtyNueva }
+    const newMap = new Map();
+    for (const linea of productosEditados || []) {
+      if (!linea.id) {
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'Cada producto debe incluir su "id".' });
+      }
+      const qty = Number(linea.cantidad) || 0;
+      if (qty < 0) {
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'La cantidad no puede ser negativa.' });
+      }
+      newMap.set(String(linea.id), qty);
+    }
+
+    // 3) Construir conjunto de todos los productIds involucrados (agregados, removidos o sin cambios)
+    const allIds = new Set([...oldMap.keys(), ...newMap.keys()]);
+
+    // 4) Primero validar stock para todos los incrementos (delta > 0)
+    for (const productId of allIds) {
+      const qtyOld = oldMap.get(productId) || 0;
+      const qtyNew = newMap.get(productId) || 0;
+      const delta = qtyNew - qtyOld;
+
+      if (delta > 0) {
+        const productoDB = await Product.findById(productId).session(session);
+        if (!productoDB) {
+          await session.abortTransaction();
+          return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` });
+        }
+        if (productoDB.stock < delta) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            error: `Stock insuficiente para "${productoDB.name}". Disponibles: ${productoDB.stock}.`
+          });
+        }
+      }
+    }
+
+    // 5) Aplicar ajustes de stock (primero devoluciones por reducciones/remociones, luego descuentes por incrementos)
+    // (a) devoluciones (delta < 0) → $inc: +abs(delta)
+    for (const productId of allIds) {
+      const qtyOld = oldMap.get(productId) || 0;
+      const qtyNew = newMap.get(productId) || 0;
+      const delta = qtyNew - qtyOld;
+
+      if (delta < 0) {
+        await Product.findByIdAndUpdate(
+          productId,
+          { $inc: { stock: Math.abs(delta) } },
+          { session }
+        );
+      }
+    }
+
+    // (b) descuentos (delta > 0) → $inc: -delta
+    for (const productId of allIds) {
+      const qtyOld = oldMap.get(productId) || 0;
+      const qtyNew = newMap.get(productId) || 0;
+      const delta = qtyNew - qtyOld;
+
+      if (delta > 0) {
+        await Product.findByIdAndUpdate(
+          productId,
+          { $inc: { stock: -delta } },
+          { session }
+        );
+      }
+    }
+
+    // 6) Recalcular líneas (precio unitario, total) y totales del pedido
+    const nuevasLineas = [];
+    let totalGeneral = 0;
+    let pesoTotalKg = 0;
+
+    for (const productId of newMap.keys()) {
+      const cantidad = newMap.get(productId) || 0;
+      if (cantidad === 0) continue; // si quedó en 0, no incluir en el pedido
+
+      const productoDB = await Product.findById(productId).session(session);
+      if (!productoDB) {
+        await session.abortTransaction();
+        return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` });
+      }
+
+      const precioUnitario = (productoDB.discountPrice && productoDB.discountPrice < productoDB.price)
+        ? productoDB.discountPrice
+        : productoDB.price;
+
+      const totalLinea = precioUnitario * cantidad;
+
+      const weightGr = Number(productoDB.weight_grams) || 0;
+      pesoTotalKg += (weightGr / 1000) * cantidad;
+
+      nuevasLineas.push({
+        id: String(productoDB._id),
+        nombre: productoDB.name,
+        cantidad,
+        precioUnitario,
+        total: totalLinea
+      });
+
+      totalGeneral += totalLinea;
+    }
+
+    // 7) Actualizar el pedido
+    pedidoActual.nombre = nombre ?? pedidoActual.nombre;
+    pedidoActual.celular = celular ?? pedidoActual.celular;
+    pedidoActual.correo = correo ?? pedidoActual.correo;
+    pedidoActual.direccion = direccion ?? pedidoActual.direccion;
+    pedidoActual.productos = nuevasLineas;
+    pedidoActual.total = Number(totalGeneral.toFixed(2));
+    pedidoActual.pesoTotal = Number(pesoTotalKg.toFixed(2));
+
+    await pedidoActual.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json({
+      message: 'Pedido actualizado correctamente',
+      pedido: pedidoActual
+    });
+  } catch (err) {
+    console.error('Error en PUT /api/pedidos/:id', err);
+    await session.abortTransaction();
+    session.endSession();
+    res.status(500).json({ error: 'Error al actualizar el pedido' });
+  }
+});
+
 
 
 module.exports = router;
