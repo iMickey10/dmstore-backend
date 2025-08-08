@@ -1,12 +1,8 @@
+// models/Pedido.js (ejemplo)
 const mongoose = require('mongoose');
 
 const pedidoSchema = new mongoose.Schema({
-
-  orderNumber: {
-    type: String,
-    unique: true,
-    index: true
-  },
+  orderNumber: { type: String, required: true, unique: true },
   nombre: String,
   celular: String,
   correo: String,
@@ -20,12 +16,9 @@ const pedidoSchema = new mongoose.Schema({
       total: Number
     }
   ],
+  total: Number,
   pesoTotal: Number,
-  createdAt: {
-    type: Date,
-    default: Date.now
-  }
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('Pedido', pedidoSchema);
 
