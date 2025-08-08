@@ -202,6 +202,21 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// Obtener un pedido por ID
+router.get('/:id', async (req, res) => {
+  try {
+    const pedido = await Pedido.findById(req.params.id);
+    if (!pedido) {
+      return res.status(404).json({ error: 'Pedido no encontrado.' });
+    }
+    res.json(pedido);
+  } catch (err) {
+    console.error('Error al obtener pedido por ID:', err);
+    res.status(500).json({ error: 'Error al obtener el pedido.' });
+  }
+});
+
+
 
 module.exports = router;
 
