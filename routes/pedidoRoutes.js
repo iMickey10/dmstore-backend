@@ -49,7 +49,7 @@ function buildProductsTableHTML(productos, totalGeneral, pesoTotalKg) {
       </tfoot>
     </table>
     <p style="font-family:Arial,sans-serif;margin-top:10px;">
-      <strong>Peso total del paquete:</strong> ${Number(pesoTotalKg || 0).toFixed(2)} kg
+      <strong>Peso total del paquete: ${Number(pesoTotalKg || 0).toFixed(2)} kg </strong>
     </p>
   `;
 }
@@ -142,19 +142,22 @@ router.post('/', async (req, res) => {
     const clienteHTML = `
       <div style="font-family:Arial,sans-serif;">
         <h2 style="color:#c08f9b;margin:0 0 8px 0;">Gracias por tu pedido</h2>
-        <p style="margin:4px 0;">¡Hola ${nombre}!, hemos recibido tu pedido correctamente.</p>
+        <p style="margin:4px 0;">¡Hola ${nombre}!, hemos recibido tu pedido correctamente con los siguientes detalles:</p>
         <p style="margin:4px 0;"><strong>Número de pedido:</strong> ${orderNumber}</p>
-        <p style="margin:4px 0;">Te compartimos el detalle:</p>
+        <p style="margin:4px 0;"><strong>Celular:</strong> ${celular}</p>
+        <p style="margin:4px 0;"><strong>Dirección:</strong> ${direccion}</p>
+        <p style="margin:4px 0;">🛒 <strong>Productos solicitados:</strong></p>
         <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
         ${tablaHTML}
-        <p style="margin-top:12px;">Nos pondremos en contacto contigo por WhatsApp o correo para confirmar el envío. 💖</p>
+        <p style="margin-top:12px;">En breve nos pondremos en contacto contigo vía WhatsApp para
+         coordinar el método de pago y los detalles de envío (ya sea por paquetería o presencial). </p>
       </div>
     `;
 
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: correo,
-      subject: `Gracias por tu pedido - ${orderNumber} - DM STORE`,
+      subject: `Gracias por realizar tu pedido con nosotros 💖 - ${orderNumber} - DM STORE`,
       html: clienteHTML
     });
 
