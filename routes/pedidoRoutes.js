@@ -146,11 +146,13 @@ router.post('/', async (req, res) => {
         <p style="margin:4px 0;"><strong>Número de pedido:</strong> ${orderNumber}</p>
         <p style="margin:4px 0;"><strong>Celular:</strong> ${celular}</p>
         <p style="margin:4px 0;"><strong>Dirección:</strong> ${direccion}</p>
-        <p style="margin:4px 0;">🛒 <strong>Productos solicitados:</strong></p>
+        <h2 style="color:#c08f9b;margin:0 0 8px 0;">🛒 <strong>Productos solicitados:</h2>
         <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
         ${tablaHTML}
         <p style="margin-top:12px;">En breve nos pondremos en contacto contigo vía WhatsApp para
          coordinar el método de pago y los detalles de envío (ya sea por paquetería o presencial). </p>
+      </div>
+      <p style="margin-top:12px;"><strong>Gracias por realizar tu pedido con nosotros 💖 </strong></p>
       </div>
     `;
 
