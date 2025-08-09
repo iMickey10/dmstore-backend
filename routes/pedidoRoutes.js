@@ -83,13 +83,27 @@ function buildProductsTableHTML(productos, _totalGeneralNoUsado, pesoTotalKg) {
   `;
 }
 
-// ===== Rutas =====
-router.get('/', async (req, res) => {
+// Obtener un pedido por ID (Mongo) o por orderNumber (DM-XXXXXX)
+router.get('/:id', async (req, res) => {
   try {
-    const pedidos = await Pedido.find().sort({ createdAt: -1 });
-    res.json(pedidos);
+    const idParam = req.params.id;
+    let pedido = null;
+
+    if (mongoose.isValidObjectId(idParam)) {
+      pedido = await Pedido.findById(idParam);
+    } else {
+      // Si no es ObjectId, probamos por orderNumber
+      pedido = await Pedido.findOne({ orderNumber: idParam });
+    }
+
+    if (!pedido) {
+      return res.status(404).json({ error: 'Pedido no encontrado.' });
+    }
+
+    res.json(pedido);
   } catch (err) {
-    res.status(500).json({ error: 'Error al obtener los pedidos' });
+    console.error('Error al obtener pedido:', err);
+    res.status(500).json({ error: 'Error al obtener el pedido.' });
   }
 });
 
