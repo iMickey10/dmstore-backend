@@ -6,6 +6,31 @@ const Product = require('../models/Product');
 const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 
+// =====================
+// Helpers de precios
+// =====================
+
+// Lee el modo 'normal' | 'promo' | 'both'.
+// TODO: Si tienes un modelo de Settings, obtén el valor real desde DB aquí.
+async function getCatalogPriceMode() {
+  try {
+    return process.env.CATALOG_PRICE_MODE || 'normal';
+  } catch {
+    return 'normal';
+  }
+}
+
+// Decide el precio unitario según el modo
+function pickUnitPrice(productDoc, mode = 'normal') {
+  const price = Number(productDoc?.price) || 0;
+  const discount = Number(productDoc?.discountPrice) || 0;
+
+  if (mode === 'normal') return price;
+  if ((mode === 'promo' || mode === 'both') && discount > 0 && discount < price) {
+    return discount;
+  }
+  return price;
+}
 
 // Genera número de pedido SIN fecha: DM-XXXXXX
 function buildOrderNumber(docId) {
@@ -13,20 +38,25 @@ function buildOrderNumber(docId) {
   return `DM-${suffix}`;
 }
 
-// Tabla HTML con Total General y peso total
+// Tabla HTML con Total General y peso total (recalcula el total desde las filas)
 function buildProductsTableHTML(productos, totalGeneral, pesoTotalKg) {
-  const rows = productos.map(p => {
-    const unit = Number(p.precioUnitario || p.precio || 0);
-    const subtotal = Number(p.total || p.subtotal || (unit * Number(p.cantidad || 0)));
-    return `
+  const filas = (productos || []).map(p => {
+    const unit = Number(p.precioUnitario ?? p.precio ?? 0);
+    const qty  = Number(p.cantidad ?? 0);
+    const subtotal = Number(p.total ?? p.subtotal ?? (unit * qty));
+    return { nombre: p.nombre, cantidad: qty, unit, subtotal };
+  });
+
+  const sumSubtotales = filas.reduce((acc, f) => acc + (Number.isFinite(f.subtotal) ? f.subtotal : 0), 0);
+
+  const rows = filas.map(f => `
       <tr>
-        <td style="padding:8px;border:1px solid #ddd;">${p.nombre}</td>
-        <td style="padding:8px;border:1px solid #ddd; text-align:center;">${p.cantidad}</td>
-        <td style="padding:8px;border:1px solid #ddd; text-align:right;">$${unit.toFixed(2)}</td>
-        <td style="padding:8px;border:1px solid #ddd; text-align:right;">$${subtotal.toFixed(2)}</td>
+        <td style="padding:8px;border:1px solid #ddd;">${f.nombre}</td>
+        <td style="padding:8px;border:1px solid #ddd; text-align:center;">${f.cantidad}</td>
+        <td style="padding:8px;border:1px solid #ddd; text-align:right;">$${Number(f.unit).toFixed(2)}</td>
+        <td style="padding:8px;border:1px solid #ddd; text-align:right;">$${Number(f.subtotal).toFixed(2)}</td>
       </tr>
-    `;
-  }).join('');
+    `).join('');
 
   return `
     <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;">
@@ -45,7 +75,7 @@ function buildProductsTableHTML(productos, totalGeneral, pesoTotalKg) {
             Total General
           </td>
           <td style="padding:8px;border:1px solid #ddd;font-weight:bold;text-align:right;">
-            $${Number(totalGeneral || 0).toFixed(2)}
+            $${Number(sumSubtotales).toFixed(2)}
           </td>
         </tr>
       </tfoot>
@@ -65,10 +95,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-
 router.post('/', async (req, res) => {
   try {
-    const { nombre, celular, correo, direccion, productos, pesoTotal, total } = req.body;
+    const { nombre, celular, correo, direccion, productos, pesoTotal /* total del front no se usa */ } = req.body;
 
     if (!Array.isArray(productos) || productos.length === 0) {
       return res.status(400).json({ error: 'No se enviaron productos en el pedido.' });
@@ -88,14 +117,21 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 2) Calcular total en servidor por seguridad
+    // 2) Calcular total en servidor por seguridad (respetando modo)
+    const mode = await getCatalogPriceMode();
     let totalServidor = 0;
+
     for (const p of productos) {
       const productoDB = await Product.findById(p.id);
-      const unit = (productoDB.discountPrice && productoDB.discountPrice < productoDB.price)
-        ? productoDB.discountPrice
-        : productoDB.price;
-      totalServidor += unit * p.cantidad;
+      const unit = pickUnitPrice(productoDB, mode);
+      const qty = Number(p.cantidad || 0);
+      const lineTotal = unit * qty;
+
+      // normaliza lo que vas a guardar/enviar
+      p.precioUnitario = unit;
+      p.total = lineTotal;
+
+      totalServidor += lineTotal;
     }
 
     // 3) Crear pedido con _id ya generado => podemos crear orderNumber antes de guardar
@@ -104,9 +140,9 @@ router.post('/', async (req, res) => {
       celular,
       correo,
       direccion,
-      productos,       // se guarda lo que llegó del front (id, nombre, cantidad, precioUnitario/total si los mandas)
-      pesoTotal,       // en kg
-      total: totalServidor, // guardamos el total calculado en backend
+      productos,        // líneas normalizadas con precioUnitario y total
+      pesoTotal,        // en kg
+      total: Number(totalServidor.toFixed(2)), // guardamos el total calculado en backend
     });
 
     // generar y asignar número de pedido
@@ -127,6 +163,7 @@ router.post('/', async (req, res) => {
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     });
 
+    // La tabla recalcula el total desde las filas, así que siempre cuadra
     const tablaHTML = buildProductsTableHTML(productos, totalServidor, pesoTotal);
 
     // Correo para la tienda (sin agradecimiento)
@@ -158,14 +195,13 @@ router.post('/', async (req, res) => {
         <p style="margin:4px 0;"><strong>Número de pedido:</strong> ${orderNumber}</p>
         <p style="margin:4px 0;"><strong>Celular:</strong> ${celular}</p>
         <p style="margin:4px 0;"><strong>Dirección:</strong> ${direccion}</p>
-        <h2 style="color:#c08f9b;margin:0 0 8px 0;">🛒 <strong>Productos solicitados:</h2>
+        <h2 style="color:#c08f9b;margin:0 0 8px 0;">🛒 <strong>Productos solicitados:</strong></h2>
         <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
         ${tablaHTML}
         <p style="margin-top:12px;">En breve nos pondremos en contacto contigo vía WhatsApp para
-         coordinar el método de pago y los detalles de envío (ya sea por paquetería o presencial). </p>
+         coordinar el método de pago y los detalles de envío (ya sea por paquetería o presencial).</p>
       </div>
-      <p style="margin-top:12px;"><strong>Gracias por realizar tu pedido con nosotros 💖 </strong></p>
-      </div>
+      <p style="margin-top:12px;"><strong>Gracias por realizar tu pedido con nosotros 💖</strong></p>
     `;
 
     await transporter.sendMail({
@@ -234,16 +270,13 @@ router.put('/:id', async (req, res) => {
     }
 
     // 2) Mapas para comparar cantidades
-    // oldMap: { productId -> qtyAnterior }
     const oldMap = new Map();
     for (const linea of pedidoActual.productos) {
-      // Asegúrate que id sea el campo con el _id del producto
       oldMap.set(String(linea.id), linea.cantidad);
     }
 
-    // newMap: { productId -> qtyNueva }
     const newMap = new Map();
-    for (const linea of productosEditados || []) {
+    for (const linea of (productosEditados || [])) {
       if (!linea.id) {
         await session.abortTransaction();
         return res.status(400).json({ error: 'Cada producto debe incluir su "id".' });
@@ -256,10 +289,10 @@ router.put('/:id', async (req, res) => {
       newMap.set(String(linea.id), qty);
     }
 
-    // 3) Construir conjunto de todos los productIds involucrados (agregados, removidos o sin cambios)
+    // 3) Conjunto de todos los productIds
     const allIds = new Set([...oldMap.keys(), ...newMap.keys()]);
 
-    // 4) Primero validar stock para todos los incrementos (delta > 0)
+    // 4) Validar stock para incrementos
     for (const productId of allIds) {
       const qtyOld = oldMap.get(productId) || 0;
       const qtyNew = newMap.get(productId) || 0;
@@ -280,13 +313,12 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // 5) Aplicar ajustes de stock (primero devoluciones por reducciones/remociones, luego descuentes por incrementos)
-    // (a) devoluciones (delta < 0) → $inc: +abs(delta)
+    // 5) Ajustes de stock
+    // (a) devoluciones
     for (const productId of allIds) {
       const qtyOld = oldMap.get(productId) || 0;
       const qtyNew = newMap.get(productId) || 0;
       const delta = qtyNew - qtyOld;
-
       if (delta < 0) {
         await Product.findByIdAndUpdate(
           productId,
@@ -295,13 +327,11 @@ router.put('/:id', async (req, res) => {
         );
       }
     }
-
-    // (b) descuentos (delta > 0) → $inc: -delta
+    // (b) descuentos
     for (const productId of allIds) {
       const qtyOld = oldMap.get(productId) || 0;
       const qtyNew = newMap.get(productId) || 0;
       const delta = qtyNew - qtyOld;
-
       if (delta > 0) {
         await Product.findByIdAndUpdate(
           productId,
@@ -311,14 +341,15 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // 6) Recalcular líneas (precio unitario, total) y totales del pedido
+    // 6) Recalcular líneas y totales (respetando modo)
+    const mode = await getCatalogPriceMode();
     const nuevasLineas = [];
     let totalGeneral = 0;
     let pesoTotalKg = 0;
 
     for (const productId of newMap.keys()) {
       const cantidad = newMap.get(productId) || 0;
-      if (cantidad === 0) continue; // si quedó en 0, no incluir en el pedido
+      if (cantidad === 0) continue;
 
       const productoDB = await Product.findById(productId).session(session);
       if (!productoDB) {
@@ -326,10 +357,7 @@ router.put('/:id', async (req, res) => {
         return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` });
       }
 
-      const precioUnitario = (productoDB.discountPrice && productoDB.discountPrice < productoDB.price)
-        ? productoDB.discountPrice
-        : productoDB.price;
-
+      const precioUnitario = pickUnitPrice(productoDB, mode);
       const totalLinea = precioUnitario * cantidad;
 
       const weightGr = Number(productoDB.weight_grams) || 0;
@@ -358,91 +386,85 @@ router.put('/:id', async (req, res) => {
     await pedidoActual.save({ session });
 
     await session.commitTransaction();
-    
-    // ... después de actualizar el pedido y antes de responder:
-const actualizado = await Pedido.findById(pedidoId); // o la variable que ya tengas con el pedido actualizado
 
-// Transporter (puedes extraerlo a un módulo para reusar con el POST)
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+    // Emails de actualización
+    const actualizado = await Pedido.findById(pedidoId);
 
-// Tabla HTML de productos
-const filasHtml = (actualizado.productos || []).map(p => `
-  <tr>
-    <td style="padding:8px;border:1px solid #eee;">${p.nombre}</td>
-    <td style="padding:8px;border:1px solid #eee;text-align:center;">${p.cantidad}</td>
-    <td style="padding:8px;border:1px solid #eee;text-align:right;">$${Number(p.precioUnitario).toFixed(2)}</td>
-    <td style="padding:8px;border:1px solid #eee;text-align:right;">$${Number(p.total).toFixed(2)}</td>
-  </tr>
-`).join('');
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
 
-const tablaHtml = `
-  <table style="border-collapse:collapse;width:100%;font-family:Arial, sans-serif;">
-    <thead>
-      <tr style="background:#f7f7f7;">
-        <th style="padding:8px;border:1px solid #eee;text-align:left;">Producto</th>
-        <th style="padding:8px;border:1px solid #eee;text-align:center;">Cantidad</th>
-        <th style="padding:8px;border:1px solid #eee;text-align:right;">Precio Unitario</th>
-        <th style="padding:8px;border:1px solid #eee;text-align:right;">Total</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${filasHtml}
-    </tbody>
-    <tfoot>
+    const filasHtml = (actualizado.productos || []).map(p => `
       <tr>
-        <td colspan="3" style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold;">Total general</td>
-        <td style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold;">$${Number(actualizado.total || 0).toFixed(2)}</td>
+        <td style="padding:8px;border:1px solid #eee;">${p.nombre}</td>
+        <td style="padding:8px;border:1px solid #eee;text-align:center;">${p.cantidad}</td>
+        <td style="padding:8px;border:1px solid #eee;text-align:right;">$${Number(p.precioUnitario).toFixed(2)}</td>
+        <td style="padding:8px;border:1px solid #eee;text-align:right;">$${Number(p.total).toFixed(2)}</td>
       </tr>
-    </tfoot>
-  </table>
-`;
+    `).join('');
 
-// Email para el cliente
-const htmlCliente = `
-  <div style="font-family:Arial, sans-serif;">
-    <h2 style="color:#c08f9b;margin-bottom:8px;">Actualización de tu pedido</h2>
-    <p style="margin:0 0 8px 0;">Hola <strong>${actualizado.nombre}</strong>, tu pedido <strong>#${actualizado.orderNumber}</strong> fue actualizado.</p>
-    <p style="margin:0 0 16px 0;"><strong>Resumen actualizado:</strong></p>
-    ${tablaHtml}
-    <p style="margin:16px 0 4px 0;"><strong>Peso total del paquete:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
-    <p style="margin:0;">Si tienes dudas, responde a este correo.</p>
-    <p style="margin:16px 0 0 0;"><strong>DM STORE</strong></p>
-  </div>
-`;
+    const tablaHtml = `
+      <table style="border-collapse:collapse;width:100%;font-family:Arial, sans-serif;">
+        <thead>
+          <tr style="background:#f7f7f7;">
+            <th style="padding:8px;border:1px solid #eee;text-align:left;">Producto</th>
+            <th style="padding:8px;border:1px solid #eee;text-align:center;">Cantidad</th>
+            <th style="padding:8px;border:1px solid #eee;text-align:right;">Precio Unitario</th>
+            <th style="padding:8px;border:1px solid #eee;text-align:right;">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filasHtml}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold;">Total general</td>
+            <td style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold;">$${Number(actualizado.total || 0).toFixed(2)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    `;
 
-await transporter.sendMail({
-  from: process.env.EMAIL_USER,
-  to: actualizado.correo, // solo al cliente
-  subject: `Actualización de tu pedido #${actualizado.orderNumber} - DM STORE`,
-  html: htmlCliente
-});
+    const htmlCliente = `
+      <div style="font-family:Arial, sans-serif;">
+        <h2 style="color:#c08f9b;margin-bottom:8px;">Actualización de tu pedido</h2>
+        <p style="margin:0 0 8px 0;">Hola <strong>${actualizado.nombre}</strong>, tu pedido <strong>#${actualizado.orderNumber}</strong> fue actualizado.</p>
+        <p style="margin:0 0 16px 0;"><strong>Resumen actualizado:</strong></p>
+        ${tablaHtml}
+        <p style="margin:16px 0 4px 0;"><strong>Peso total del paquete:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
+        <p style="margin:0;">Si tienes dudas, responde a este correo.</p>
+        <p style="margin:16px 0 0 0;"><strong>DM STORE</strong></p>
+      </div>
+    `;
 
-// (Opcional) si quieres notificarte a ti también con otro asunto y sin “gracias”:
-const htmlTienda = `
-  <div style="font-family:Arial, sans-serif;">
-    <h2 style="color:#c08f9b;margin-bottom:8px;">Pedido actualizado</h2>
-    <p style="margin:0 0 8px 0;">Pedido <strong>#${actualizado.orderNumber}</strong> actualizado por el admin.</p>
-    <p style="margin:0 0 4px 0;"><strong>Cliente:</strong> ${actualizado.nombre} (${actualizado.correo})</p>
-    <p style="margin:0 0 16px 0;"><strong>Dirección:</strong> ${actualizado.direccion}</p>
-    ${tablaHtml}
-    <p style="margin:16px 0 0 0;"><strong>Peso:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
-  </div>
-`;
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: actualizado.correo,
+      subject: `Actualización de tu pedido #${actualizado.orderNumber} - DM STORE`,
+      html: htmlCliente
+    });
 
-await transporter.sendMail({
-  from: process.env.EMAIL_USER,
-  to: process.env.EMAIL_USER, // correo de la tienda
-  subject: `Pedido actualizado #${actualizado.orderNumber} - DM STORE`,
-  html: htmlTienda
-});
+    const htmlTienda = `
+      <div style="font-family:Arial, sans-serif;">
+        <h2 style="color:#c08f9b;margin-bottom:8px;">Pedido actualizado</h2>
+        <p style="margin:0 0 8px 0;">Pedido <strong>#${actualizado.orderNumber}</strong> actualizado por el admin.</p>
+        <p style="margin:0 0 4px 0;"><strong>Cliente:</strong> ${actualizado.nombre} (${actualizado.correo})</p>
+        <p style="margin:0 0 16px 0;"><strong>Dirección:</strong> ${actualizado.direccion}</p>
+        ${tablaHtml}
+        <p style="margin:16px 0 0 0;"><strong>Peso:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
+      </div>
+    `;
 
-
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER,
+      subject: `Pedido actualizado #${actualizado.orderNumber} - DM STORE`,
+      html: htmlTienda
+    });
 
     session.endSession();
 
@@ -458,7 +480,6 @@ await transporter.sendMail({
   }
 });
 
-
-
 module.exports = router;
+
 
