@@ -358,6 +358,92 @@ router.put('/:id', async (req, res) => {
     await pedidoActual.save({ session });
 
     await session.commitTransaction();
+    
+    // ... después de actualizar el pedido y antes de responder:
+const actualizado = await Pedido.findById(pedidoId); // o la variable que ya tengas con el pedido actualizado
+
+// Transporter (puedes extraerlo a un módulo para reusar con el POST)
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// Tabla HTML de productos
+const filasHtml = (actualizado.productos || []).map(p => `
+  <tr>
+    <td style="padding:8px;border:1px solid #eee;">${p.nombre}</td>
+    <td style="padding:8px;border:1px solid #eee;text-align:center;">${p.cantidad}</td>
+    <td style="padding:8px;border:1px solid #eee;text-align:right;">$${Number(p.precioUnitario).toFixed(2)}</td>
+    <td style="padding:8px;border:1px solid #eee;text-align:right;">$${Number(p.total).toFixed(2)}</td>
+  </tr>
+`).join('');
+
+const tablaHtml = `
+  <table style="border-collapse:collapse;width:100%;font-family:Arial, sans-serif;">
+    <thead>
+      <tr style="background:#f7f7f7;">
+        <th style="padding:8px;border:1px solid #eee;text-align:left;">Producto</th>
+        <th style="padding:8px;border:1px solid #eee;text-align:center;">Cantidad</th>
+        <th style="padding:8px;border:1px solid #eee;text-align:right;">Precio Unitario</th>
+        <th style="padding:8px;border:1px solid #eee;text-align:right;">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${filasHtml}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="3" style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold;">Total general</td>
+        <td style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold;">$${Number(actualizado.total || 0).toFixed(2)}</td>
+      </tr>
+    </tfoot>
+  </table>
+`;
+
+// Email para el cliente
+const htmlCliente = `
+  <div style="font-family:Arial, sans-serif;">
+    <h2 style="color:#c08f9b;margin-bottom:8px;">Actualización de tu pedido</h2>
+    <p style="margin:0 0 8px 0;">Hola <strong>${actualizado.nombre}</strong>, tu pedido <strong>#${actualizado.orderNumber}</strong> fue actualizado.</p>
+    <p style="margin:0 0 16px 0;"><strong>Resumen actualizado:</strong></p>
+    ${tablaHtml}
+    <p style="margin:16px 0 4px 0;"><strong>Peso total del paquete:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
+    <p style="margin:0;">Si tienes dudas, responde a este correo.</p>
+    <p style="margin:16px 0 0 0;"><strong>DM STORE</strong></p>
+  </div>
+`;
+
+await transporter.sendMail({
+  from: process.env.EMAIL_USER,
+  to: actualizado.correo, // solo al cliente
+  subject: `Actualización de tu pedido #${actualizado.orderNumber} - DM STORE`,
+  html: htmlCliente
+});
+
+// (Opcional) si quieres notificarte a ti también con otro asunto y sin “gracias”:
+const htmlTienda = `
+  <div style="font-family:Arial, sans-serif;">
+    <h2 style="color:#c08f9b;margin-bottom:8px;">Pedido actualizado</h2>
+    <p style="margin:0 0 8px 0;">Pedido <strong>#${actualizado.orderNumber}</strong> actualizado por el admin.</p>
+    <p style="margin:0 0 4px 0;"><strong>Cliente:</strong> ${actualizado.nombre} (${actualizado.correo})</p>
+    <p style="margin:0 0 16px 0;"><strong>Dirección:</strong> ${actualizado.direccion}</p>
+    ${tablaHtml}
+    <p style="margin:16px 0 0 0;"><strong>Peso:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
+  </div>
+`;
+
+await transporter.sendMail({
+  from: process.env.EMAIL_USER,
+  to: process.env.EMAIL_USER, // correo de la tienda
+  subject: `Pedido actualizado #${actualizado.orderNumber} - DM STORE`,
+  html: htmlTienda
+});
+
+
+
     session.endSession();
 
     res.json({
