@@ -28,3 +28,4 @@ app.listen(PORT, () => {
   console.log(`Servidor escuchando en puerto ${PORT}`);
 });
 
+app.get('/api/health', (req, res) => res.json({ ok: true }));

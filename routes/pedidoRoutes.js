@@ -5,6 +5,14 @@ const Pedido = require('../models/Pedido');
 const Product = require('../models/Product');
 const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
+const express = require('express');
+const router = express.Router();
+
+console.log('[pedidoRoutes] cargado'); // debe verse en logs al arrancar
+
+router.get('/health', (req, res) => {
+  res.json({ ok: true, scope: 'pedidos' });
+});
 
 // ===== Settings model (mínimo viable) =====
 let Setting;
