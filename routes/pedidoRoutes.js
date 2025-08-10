@@ -436,9 +436,7 @@ router.put('/:id', async (req, res) => {
       <div style="font-family:Arial, sans-serif;">
         <h2 style="color:#c08f9b;margin-bottom:8px;">Actualización de tu pedido</h2>
         <p style="margin:0 0 8px 0;">Hola <strong>${actualizado.nombre}</strong>, tu pedido <strong>#${actualizado.orderNumber}</strong> fue actualizado.</p>
-        <p style="margin:0 0 8px 0;">Tipo de precio: <strong>${actualizado.tipoPrecio}</strong> (modo activo: <em>${actualizado.priceMode}</em>)</p>
         ${tablaHtml}
-        <p style="margin:16px 0 4px 0;"><strong>Peso total del paquete:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
         <p style="margin:0;">Si tienes dudas, responde a este correo.</p>
         <p style="margin:16px 0 0 0;"><strong>DM STORE</strong></p>
       </div>
@@ -457,7 +455,6 @@ router.put('/:id', async (req, res) => {
         <h2 style="color:#c08f9b;margin-bottom:8px;">Pedido actualizado</h2>
         <p style="margin:0 0 8px 0;">Pedido <strong>#${actualizado.orderNumber}</strong> actualizado por el admin.</p>
         <p style="margin:0 0 4px 0;"><strong>Cliente:</strong> ${actualizado.nombre} (${actualizado.correo})</p>
-        <p style="margin:0 0 4px 0;"><strong>Tipo de precio:</strong> ${actualizado.tipoPrecio} (modo: ${actualizado.priceMode})</p>
         ${tablaHtml}
         <p style="margin:16px 0 0 0;"><strong>Peso:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
       </div>
