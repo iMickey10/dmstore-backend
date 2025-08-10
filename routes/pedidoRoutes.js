@@ -263,9 +263,11 @@ router.post('/', async (req, res) => {
         <h2 style="color:#c08f9b;margin:0 0 8px 0;">Gracias por tu pedido</h2>
         <p style="margin:4px 0;">¡Hola ${nombre}!, hemos recibido tu pedido correctamente:</p>
         <p style="margin:4px 0;"><strong>Número de pedido:</strong> ${orderNumber}</p>
+        <p style="margin:4px 0;"><strong>Celular:</strong> ${celular}</p>
         <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
         ${tablaHTML}
-        <p style="margin-top:12px;">En breve nos pondremos en contacto contigo vía WhatsApp…</p>
+        <p style="margin-top:12px;">En breve nos pondremos en contacto contigo vía WhatsApp para coordinar el método de pago
+        y los detalles de envio (ya sea por paquetería o presencial).</p>
       </div>
       <p style="margin-top:12px;"><strong>Gracias por realizar tu pedido con nosotros 💖</strong></p>
     `;
@@ -306,7 +308,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Editar pedido (recalcula totales, respeta modo, ajusta stock)
+// PUT actualizar pedido (vuelve a enviar correo de actualización)
 router.put('/:id', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -320,36 +322,35 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
-    // mapas cantidades
+    // Mapas de cantidades
     const oldMap = new Map(pedidoActual.productos.map(l => [String(l.id), l.cantidad]));
-    const newMap = new Map();
-    for (const l of (productosEditados || [])) {
-      if (!l.id) { await session.abortTransaction(); return res.status(400).json({ error: 'Cada producto debe incluir su "id".' }); }
-      const qty = Number(l.cantidad) || 0;
-      if (qty < 0) { await session.abortTransaction(); return res.status(400).json({ error: 'La cantidad no puede ser negativa.' }); }
-      newMap.set(String(l.id), qty);
-    }
+    const newMap = new Map((productosEditados || []).map(l => [String(l.id), Number(l.cantidad) || 0]));
 
+    // Validar stock para incrementos
     const allIds = new Set([...oldMap.keys(), ...newMap.keys()]);
-
-    // validar incrementos
     for (const productId of allIds) {
       const delta = (newMap.get(productId) || 0) - (oldMap.get(productId) || 0);
       if (delta > 0) {
         const productoDB = await Product.findById(productId).session(session);
-        if (!productoDB) { await session.abortTransaction(); return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` }); }
-        if (productoDB.stock < delta) { await session.abortTransaction(); return res.status(400).json({ error: `Stock insuficiente para "${productoDB.name}". Disponibles: ${productoDB.stock}.` }); }
+        if (!productoDB) {
+          await session.abortTransaction();
+          return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` });
+        }
+        if (productoDB.stock < delta) {
+          await session.abortTransaction();
+          return res.status(400).json({ error: `Stock insuficiente para "${productoDB.name}". Disponibles: ${productoDB.stock}.` });
+        }
       }
     }
 
-    // aplicar devoluciones
+    // Ajustes de stock (devoluciones primero)
     for (const productId of allIds) {
       const delta = (newMap.get(productId) || 0) - (oldMap.get(productId) || 0);
       if (delta < 0) {
         await Product.findByIdAndUpdate(productId, { $inc: { stock: Math.abs(delta) } }, { session });
       }
     }
-    // aplicar descuentos
+    // Descuentos
     for (const productId of allIds) {
       const delta = (newMap.get(productId) || 0) - (oldMap.get(productId) || 0);
       if (delta > 0) {
@@ -357,19 +358,20 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // recalcular líneas + totales según modo
+    // Recalcular líneas y totales (respetando modo)
     const mode = await getCatalogPriceMode();
     const nuevasLineas = [];
     let totalGeneral = 0;
     let pesoTotalKg = 0;
     let anyPromoUsed = false;
 
-    for (const productId of newMap.keys()) {
-      const cantidad = newMap.get(productId) || 0;
-      if (cantidad === 0) continue;
-
+    for (const [productId, cantidad] of newMap) {
+      if (!cantidad) continue;
       const productoDB = await Product.findById(productId).session(session);
-      if (!productoDB) { await session.abortTransaction(); return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` }); }
+      if (!productoDB) {
+        await session.abortTransaction();
+        return res.status(404).json({ error: `Producto con ID ${productId} no encontrado.` });
+      }
 
       const unit = pickUnitPrice(productoDB, mode);
       const lineTotal = unit * cantidad;
@@ -393,6 +395,7 @@ router.put('/:id', async (req, res) => {
       totalGeneral += lineTotal;
     }
 
+    // Actualizar documento
     pedidoActual.nombre = nombre ?? pedidoActual.nombre;
     pedidoActual.celular = celular ?? pedidoActual.celular;
     pedidoActual.correo = correo ?? pedidoActual.correo;
@@ -407,14 +410,77 @@ router.put('/:id', async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
-    res.json({ message: 'Pedido actualizado correctamente', pedido: pedidoActual });
+    // ===== Enviar correos de actualización =====
+    // Volvemos a leer el pedido ya persistido (fuera de la sesión) por seguridad
+    const actualizado = await Pedido.findById(pedidoId);
+    if (!actualizado) {
+      // No debería ocurrir, pero respondemos igual
+      return res.json({ message: 'Pedido actualizado (sin correo por verificación fallida)', pedido: pedidoActual });
+    }
+
+    // Transporter (Gmail)
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+    });
+
+    // Reutilizamos tu generador de tabla (ya suma desde filas)
+    const tablaHtml = buildProductsTableHTML(
+      actualizado.productos,
+      actualizado.total,
+      actualizado.pesoTotal
+    );
+
+    // Email para el cliente
+    const htmlCliente = `
+      <div style="font-family:Arial, sans-serif;">
+        <h2 style="color:#c08f9b;margin-bottom:8px;">Actualización de tu pedido</h2>
+        <p style="margin:0 0 8px 0;">Hola <strong>${actualizado.nombre}</strong>, tu pedido <strong>#${actualizado.orderNumber}</strong> fue actualizado.</p>
+        <p style="margin:0 0 8px 0;">Tipo de precio: <strong>${actualizado.tipoPrecio}</strong> (modo activo: <em>${actualizado.priceMode}</em>)</p>
+        ${tablaHtml}
+        <p style="margin:16px 0 4px 0;"><strong>Peso total del paquete:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
+        <p style="margin:0;">Si tienes dudas, responde a este correo.</p>
+        <p style="margin:16px 0 0 0;"><strong>DM STORE</strong></p>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: actualizado.correo,
+      subject: `Actualización de tu pedido #${actualizado.orderNumber} - DM STORE`,
+      html: htmlCliente
+    });
+
+    // (Opcional) Email para la tienda
+    const htmlTienda = `
+      <div style="font-family:Arial, sans-serif;">
+        <h2 style="color:#c08f9b;margin-bottom:8px;">Pedido actualizado</h2>
+        <p style="margin:0 0 8px 0;">Pedido <strong>#${actualizado.orderNumber}</strong> actualizado por el admin.</p>
+        <p style="margin:0 0 4px 0;"><strong>Cliente:</strong> ${actualizado.nombre} (${actualizado.correo})</p>
+        <p style="margin:0 0 4px 0;"><strong>Tipo de precio:</strong> ${actualizado.tipoPrecio} (modo: ${actualizado.priceMode})</p>
+        ${tablaHtml}
+        <p style="margin:16px 0 0 0;"><strong>Peso:</strong> ${Number(actualizado.pesoTotal || 0).toFixed(2)} kg</p>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER,
+      subject: `Pedido actualizado #${actualizado.orderNumber} - DM STORE`,
+      html: htmlTienda
+    });
+
+    // Respuesta final
+    res.json({ message: 'Pedido actualizado y correos enviados', pedido: pedidoActual });
+
   } catch (err) {
     console.error('Error en PUT /api/pedidos/:id', err);
-    await session.abortTransaction();
+    try { await session.abortTransaction(); } catch {}
     session.endSession();
     res.status(500).json({ error: 'Error al actualizar el pedido' });
   }
 });
+
 
 module.exports = router;
 
