@@ -5,11 +5,10 @@ const Pedido = require('../models/Pedido');
 const Product = require('../models/Product');
 const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
-const express = require('express');
-const router = express.Router();
 
 console.log('[pedidoRoutes] cargado'); // debe verse en logs al arrancar
 
+// Health de diagnóstico
 router.get('/health', (req, res) => {
   res.json({ ok: true, scope: 'pedidos' });
 });
@@ -45,7 +44,7 @@ function pickUnitPrice(productDoc, mode = 'normal') {
   return price;
 }
 
-// ===== Orden, tabla, etc. (sin cambios de estructura) =====
+// ===== Orden y tabla =====
 function buildOrderNumber(docId) {
   const suffix = String(docId).slice(-6).toUpperCase();
   return `DM-${suffix}`;
@@ -91,7 +90,20 @@ function buildProductsTableHTML(productos, _totalGeneralNoUsado, pesoTotalKg) {
   `;
 }
 
-// Obtener un pedido por ID (Mongo) o por orderNumber (DM-XXXXXX)
+// ===== RUTAS =====
+
+// LISTAR todos los pedidos  ← FALTABA (causaba 404 en /api/pedidos)
+router.get('/', async (req, res) => {
+  try {
+    const pedidos = await Pedido.find().sort({ createdAt: -1 });
+    res.json(pedidos);
+  } catch (err) {
+    console.error('Error GET /api/pedidos:', err);
+    res.status(500).json({ error: 'Error al obtener los pedidos' });
+  }
+});
+
+// OBTENER por ID (Mongo) o por orderNumber (DM-XXXXXX)
 router.get('/:id', async (req, res) => {
   try {
     const idParam = req.params.id;
@@ -100,7 +112,6 @@ router.get('/:id', async (req, res) => {
     if (mongoose.isValidObjectId(idParam)) {
       pedido = await Pedido.findById(idParam);
     } else {
-      // Si no es ObjectId, probamos por orderNumber
       pedido = await Pedido.findOne({ orderNumber: idParam });
     }
 
@@ -115,6 +126,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// CREAR pedido
 router.post('/', async (req, res) => {
   try {
     const { nombre, celular, correo, direccion, productos, pesoTotal } = req.body;
@@ -145,14 +157,12 @@ router.post('/', async (req, res) => {
       const qty = Number(p.cantidad || 0);
       const lineTotal = unit * qty;
 
-      // marcar si la línea usó promo
       const base = Number(productoDB.price) || 0;
       const disc = Number(productoDB.discountPrice) || 0;
       if ((mode === 'promo' || mode === 'both') && disc > 0 && disc < base && unit === disc) {
         anyPromoUsed = true;
       }
 
-      // normaliza lo que vas a guardar/enviar
       p.precioUnitario = unit;
       p.total = lineTotal;
 
@@ -165,14 +175,13 @@ router.post('/', async (req, res) => {
       celular,
       correo,
       direccion,
-      productos,                                  // líneas con precioUnitario y total
+      productos,
       pesoTotal,
       total: Number(totalServidor.toFixed(2)),
-      priceMode: mode,                             // ← guardar modo vigente
-      tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal'// ← para mostrar en listados
+      priceMode: mode,
+      tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal'
     });
 
-    // número de pedido
     const orderNumber = buildOrderNumber(pedidoDoc._id);
     pedidoDoc.orderNumber = orderNumber;
 
@@ -244,9 +253,22 @@ router.post('/', async (req, res) => {
   }
 });
 
-// DELETE y GET /:id igual…
+// ELIMINAR pedido
+router.delete('/:id', async (req, res) => {
+  try {
+    const pedidoId = req.params.id;
+    const eliminado = await Pedido.findByIdAndDelete(pedidoId);
+    if (!eliminado) {
+      return res.status(404).json({ error: 'Pedido no encontrado.' });
+    }
+    res.status(200).json({ message: 'Pedido eliminado correctamente.' });
+  } catch (err) {
+    console.error('Error al eliminar pedido:', err);
+    res.status(500).json({ error: 'Error al eliminar el pedido.' });
+  }
+});
 
-// PUT — también guarda priceMode y tipoPrecio
+// ACTUALIZAR pedido
 router.put('/:id', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
