@@ -1,50 +1,77 @@
 // routes/pedidoRoutes.js
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
+const nodemailer = require('nodemailer');
+
 const Pedido = require('../models/Pedido');
 const Product = require('../models/Product');
-const nodemailer = require('nodemailer');
-const mongoose = require('mongoose');
 
-console.log('[pedidoRoutes] cargado'); // debe verse en logs al arrancar
+// ===== Log de carga (útil en Render) =====
+console.log('[pedidoRoutes] Cargado');
 
-// Health de diagnóstico
+// ===== Healthcheck rápido =====
 router.get('/health', (req, res) => {
   res.json({ ok: true, scope: 'pedidos' });
 });
 
-// ===== Settings model (mínimo viable) =====
+// ===== Settings model (usa _id + mode) =====
 let Setting;
 try {
-  Setting = require('../models/Setting'); // si ya lo tienes
+  Setting = require('../models/Setting'); // tu modelo: {_id:String, mode:'normal'|'promo'|'both'}
 } catch {
+  // Fallback por si no existe el archivo
   const settingSchema = new mongoose.Schema({
-    key: { type: String, unique: true, index: true },
-    mode: { type: String, enum: ['normal', 'promo', 'both'], default: 'normal' }
+    _id: String, // p.ej. "catalog_price_display"
+    mode: { type: String, enum: ['normal', 'promo', 'both'], default: 'both' }
   }, { collection: 'settings' });
   Setting = mongoose.models.Setting || mongoose.model('Setting', settingSchema);
 }
 
-// ===== Helpers de precios =====
+// ===== Config / Helpers de precios =====
+const SETTINGS_ID = 'catalog_price_display'; // <-- Cambia si tu _id en settings es otro
+
 async function getCatalogPriceMode() {
-  // 1) intenta DB
-  const doc = await Setting.findOne({ key: 'catalog-price' }).lean().catch(() => null);
-  if (doc?.mode) return doc.mode;
-  // 2) fallback a ENV
-  if (process.env.CATALOG_PRICE_MODE) return process.env.CATALOG_PRICE_MODE;
-  // 3) default
-  return 'normal';
+  try {
+    // 1) por _id (tu esquema actual)
+    let doc = await Setting.findById(SETTINGS_ID).lean();
+    if (doc?.mode) {
+      console.log('[pedidoRoutes] mode from settings by _id:', doc.mode);
+      return doc.mode;
+    }
+
+    // 2) compatibilidad si antes usabas {key:'catalog-price'}
+    doc = await Setting.findOne({ key: 'catalog-price' }).lean();
+    if (doc?.mode) {
+      console.log('[pedidoRoutes] mode from settings by key:', doc.mode);
+      return doc.mode;
+    }
+
+    // 3) ENV
+    if (process.env.CATALOG_PRICE_MODE) {
+      console.log('[pedidoRoutes] mode from ENV:', process.env.CATALOG_PRICE_MODE);
+      return process.env.CATALOG_PRICE_MODE;
+    }
+
+    // 4) default
+    console.log('[pedidoRoutes] mode default: normal');
+    return 'normal';
+  } catch (e) {
+    console.warn('[pedidoRoutes] getCatalogPriceMode error:', e);
+    return process.env.CATALOG_PRICE_MODE || 'normal';
+  }
 }
 
 function pickUnitPrice(productDoc, mode = 'normal') {
   const price = Number(productDoc?.price) || 0;
   const discount = Number(productDoc?.discountPrice) || 0;
+
   if (mode === 'normal') return price;
   if ((mode === 'promo' || mode === 'both') && discount > 0 && discount < price) return discount;
   return price;
 }
 
-// ===== Orden y tabla =====
+// ===== Utilidades varias =====
 function buildOrderNumber(docId) {
   const suffix = String(docId).slice(-6).toUpperCase();
   return `DM-${suffix}`;
@@ -57,7 +84,9 @@ function buildProductsTableHTML(productos, _totalGeneralNoUsado, pesoTotalKg) {
     const subtotal = Number(p.total ?? p.subtotal ?? (unit * qty));
     return { nombre: p.nombre, cantidad: qty, unit, subtotal };
   });
+
   const sumSubtotales = filas.reduce((acc, f) => acc + (Number.isFinite(f.subtotal) ? f.subtotal : 0), 0);
+
   const rows = filas.map(f => `
     <tr>
       <td style="padding:8px;border:1px solid #ddd;">${f.nombre}</td>
@@ -66,6 +95,7 @@ function buildProductsTableHTML(productos, _totalGeneralNoUsado, pesoTotalKg) {
       <td style="padding:8px;border:1px solid #ddd; text-align:right;">$${Number(f.subtotal).toFixed(2)}</td>
     </tr>
   `).join('');
+
   return `
     <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;">
       <thead>
@@ -90,20 +120,20 @@ function buildProductsTableHTML(productos, _totalGeneralNoUsado, pesoTotalKg) {
   `;
 }
 
-// ===== RUTAS =====
+// ================== RUTAS ==================
 
-// LISTAR todos los pedidos  ← FALTABA (causaba 404 en /api/pedidos)
+// Listar pedidos (para listado_pedidos.php)
 router.get('/', async (req, res) => {
   try {
     const pedidos = await Pedido.find().sort({ createdAt: -1 });
     res.json(pedidos);
   } catch (err) {
-    console.error('Error GET /api/pedidos:', err);
+    console.error('Error al obtener pedidos:', err);
     res.status(500).json({ error: 'Error al obtener los pedidos' });
   }
 });
 
-// OBTENER por ID (Mongo) o por orderNumber (DM-XXXXXX)
+// Obtener un pedido por ID (Mongo) o por orderNumber (DM-XXXXXX) — para ver_pedido.php
 router.get('/:id', async (req, res) => {
   try {
     const idParam = req.params.id;
@@ -118,18 +148,18 @@ router.get('/:id', async (req, res) => {
     if (!pedido) {
       return res.status(404).json({ error: 'Pedido no encontrado.' });
     }
-
     res.json(pedido);
   } catch (err) {
-    console.error('Error al obtener pedido:', err);
+    console.error('Error al obtener pedido por ID/orderNumber:', err);
     res.status(500).json({ error: 'Error al obtener el pedido.' });
   }
 });
 
-// CREAR pedido
+// Crear pedido
 router.post('/', async (req, res) => {
   try {
     const { nombre, celular, correo, direccion, productos, pesoTotal } = req.body;
+
     if (!Array.isArray(productos) || productos.length === 0) {
       return res.status(400).json({ error: 'No se enviaron productos en el pedido.' });
     }
@@ -140,13 +170,15 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Formato de producto inválido.' });
       }
       const productoDB = await Product.findById(p.id);
-      if (!productoDB) return res.status(404).json({ error: `Producto con ID ${p.id} no encontrado.` });
+      if (!productoDB) {
+        return res.status(404).json({ error: `Producto con ID ${p.id} no encontrado.` });
+      }
       if (productoDB.stock < p.cantidad) {
         return res.status(400).json({ error: `No hay suficiente stock para "${productoDB.name}". Solo quedan ${productoDB.stock} unidades.` });
       }
     }
 
-    // 2) Calcular total respetando el modo y determinar tipoPrecio
+    // 2) Calcular total respetando el modo + tipoPrecio
     const mode = await getCatalogPriceMode();
     let totalServidor = 0;
     let anyPromoUsed = false;
@@ -157,19 +189,21 @@ router.post('/', async (req, res) => {
       const qty = Number(p.cantidad || 0);
       const lineTotal = unit * qty;
 
+      // marcar si la línea usó promo
       const base = Number(productoDB.price) || 0;
       const disc = Number(productoDB.discountPrice) || 0;
       if ((mode === 'promo' || mode === 'both') && disc > 0 && disc < base && unit === disc) {
         anyPromoUsed = true;
       }
 
+      // normaliza lo que guardas
       p.precioUnitario = unit;
       p.total = lineTotal;
 
       totalServidor += lineTotal;
     }
 
-    // 3) Crear pedido
+    // 3) Crear pedido (id ya generado => podemos crear orderNumber)
     const pedidoDoc = new Pedido({
       nombre,
       celular,
@@ -178,8 +212,8 @@ router.post('/', async (req, res) => {
       productos,
       pesoTotal,
       total: Number(totalServidor.toFixed(2)),
-      priceMode: mode,
-      tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal'
+      priceMode: mode,                          // guardamos modo vigente
+      tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal' // para listado
     });
 
     const orderNumber = buildOrderNumber(pedidoDoc._id);
@@ -193,19 +227,20 @@ router.post('/', async (req, res) => {
       await Product.findByIdAndUpdate(p.id, { $inc: { stock: -p.cantidad } });
     }
 
-    // 6) Emails
+    // 6) Enviar correos
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     });
 
-    const tablaHTML = buildProductsTableHTML(productos, totalServidor, pesoTotal);
+    const tablaHTML = buildProductsTableHTML(productos, pedidoDoc.total, pesoTotal);
 
+    // Admin
     const adminHTML = `
       <div style="font-family:Arial,sans-serif;">
         <h2 style="color:#c08f9b;margin:0 0 8px 0;">Nuevo pedido recibido</h2>
         <p style="margin:4px 0;"><strong>Número de pedido:</strong> ${orderNumber}</p>
-        <p style="margin:4px 0;"><strong>Modo:</strong> ${mode} — <strong>Tipo:</strong> ${anyPromoUsed ? 'Promo' : 'Normal'}</p>
+        <p style="margin:4px 0;"><strong>Modo:</strong> ${mode} — <strong>Tipo:</strong> ${pedidoDoc.tipoPrecio}</p>
         <p style="margin:4px 0;"><strong>Nombre:</strong> ${nombre}</p>
         <p style="margin:4px 0;"><strong>Celular:</strong> ${celular}</p>
         <p style="margin:4px 0;"><strong>Correo:</strong> ${correo}</p>
@@ -222,10 +257,11 @@ router.post('/', async (req, res) => {
       html: adminHTML
     });
 
+    // Cliente
     const clienteHTML = `
       <div style="font-family:Arial,sans-serif;">
         <h2 style="color:#c08f9b;margin:0 0 8px 0;">Gracias por tu pedido</h2>
-        <p style="margin:4px 0;">¡Hola ${nombre}!, hemos recibido tu pedido correctamente con los siguientes detalles:</p>
+        <p style="margin:4px 0;">¡Hola ${nombre}!, hemos recibido tu pedido correctamente:</p>
         <p style="margin:4px 0;"><strong>Número de pedido:</strong> ${orderNumber}</p>
         <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
         ${tablaHTML}
@@ -234,26 +270,28 @@ router.post('/', async (req, res) => {
       <p style="margin-top:12px;"><strong>Gracias por realizar tu pedido con nosotros 💖</strong></p>
     `;
 
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: correo,
-      subject: `Gracias por realizar tu pedido con nosotros 💖 - ${orderNumber} - DM STORE`,
-      html: clienteHTML
-    });
+    if (correo) {
+      await transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: correo,
+        subject: `Gracias por realizar tu pedido con nosotros 💖 - ${orderNumber} - DM STORE`,
+        html: clienteHTML
+      });
+    }
 
-    // 7) Responder
+    // 7) Respuesta
     res.status(200).json({
       message: 'Pedido recibido, correos enviados y stock actualizado',
       orderNumber
     });
 
   } catch (error) {
-    console.error('Error al procesar pedido:', error);
+    console.error('Error al procesar pedido (POST /api/pedidos):', error);
     res.status(500).json({ error: 'Error al guardar o enviar el pedido' });
   }
 });
 
-// ELIMINAR pedido
+// Eliminar pedido
 router.delete('/:id', async (req, res) => {
   try {
     const pedidoId = req.params.id;
@@ -268,7 +306,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// ACTUALIZAR pedido
+// Editar pedido (recalcula totales, respeta modo, ajusta stock)
 router.put('/:id', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -282,6 +320,7 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
+    // mapas cantidades
     const oldMap = new Map(pedidoActual.productos.map(l => [String(l.id), l.cantidad]));
     const newMap = new Map();
     for (const l of (productosEditados || [])) {
@@ -292,6 +331,8 @@ router.put('/:id', async (req, res) => {
     }
 
     const allIds = new Set([...oldMap.keys(), ...newMap.keys()]);
+
+    // validar incrementos
     for (const productId of allIds) {
       const delta = (newMap.get(productId) || 0) - (oldMap.get(productId) || 0);
       if (delta > 0) {
@@ -300,17 +341,23 @@ router.put('/:id', async (req, res) => {
         if (productoDB.stock < delta) { await session.abortTransaction(); return res.status(400).json({ error: `Stock insuficiente para "${productoDB.name}". Disponibles: ${productoDB.stock}.` }); }
       }
     }
-    // devoluciones
+
+    // aplicar devoluciones
     for (const productId of allIds) {
       const delta = (newMap.get(productId) || 0) - (oldMap.get(productId) || 0);
-      if (delta < 0) await Product.findByIdAndUpdate(productId, { $inc: { stock: Math.abs(delta) } }, { session });
+      if (delta < 0) {
+        await Product.findByIdAndUpdate(productId, { $inc: { stock: Math.abs(delta) } }, { session });
+      }
     }
-    // descuentos
+    // aplicar descuentos
     for (const productId of allIds) {
       const delta = (newMap.get(productId) || 0) - (oldMap.get(productId) || 0);
-      if (delta > 0) await Product.findByIdAndUpdate(productId, { $inc: { stock: -delta } }, { session });
+      if (delta > 0) {
+        await Product.findByIdAndUpdate(productId, { $inc: { stock: -delta } }, { session });
+      }
     }
 
+    // recalcular líneas + totales según modo
     const mode = await getCatalogPriceMode();
     const nuevasLineas = [];
     let totalGeneral = 0;
@@ -370,3 +417,4 @@ router.put('/:id', async (req, res) => {
 });
 
 module.exports = router;
+
