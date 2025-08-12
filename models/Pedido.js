@@ -25,7 +25,7 @@ const pedidoSchema = new mongoose.Schema({
   total: { type: Number, default: 0 },
   pesoTotal: { type: Number, default: 0 },
 
-  // 🔹 NUEVO: modo configurado y tipo de precio usado
+  // Modo configurado y tipo de precio usado
   priceMode: {
     type: String,
     enum: ['normal', 'promo', 'both'],
@@ -37,9 +37,18 @@ const pedidoSchema = new mongoose.Schema({
     enum: ['Normal', 'Promo'],
     default: 'Normal',
     index: true
+  },
+
+  // ⬇️ NUEVO: estado del pedido (para distinguir nuevos vs despachados)
+  estado: {
+    type: String,
+    enum: ['nuevo', 'despachado'],
+    default: 'nuevo',
+    index: true
   }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Pedido', pedidoSchema);
+
 
 

@@ -125,13 +125,19 @@ function buildProductsTableHTML(productos, _totalGeneralNoUsado, pesoTotalKg) {
 // Listar pedidos (para listado_pedidos.php)
 router.get('/', async (req, res) => {
   try {
-    const pedidos = await Pedido.find().sort({ createdAt: -1 });
+    const filtro = {};
+    if (req.query.estado && ['nuevo', 'despachado'].includes(req.query.estado)) {
+      filtro.estado = req.query.estado;
+    }
+
+    const pedidos = await Pedido.find(filtro).sort({ createdAt: -1 });
     res.json(pedidos);
   } catch (err) {
     console.error('Error al obtener pedidos:', err);
-    res.status(500).json({ error: 'Error al obtener los pedidos' });
+    res.status(500).json({ error: 'Error al obtener pedidos' });
   }
 });
+
 
 // Obtener un pedido por ID (Mongo) o por orderNumber (DM-XXXXXX) — para ver_pedido.php
 router.get('/:id', async (req, res) => {
@@ -214,6 +220,7 @@ router.post('/', async (req, res) => {
       total: Number(totalServidor.toFixed(2)),
       priceMode: mode,                          // guardamos modo vigente
       tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal' // para listado
+      estado: 'nuevo' // ⬅️ explícito
     });
 
     const orderNumber = buildOrderNumber(pedidoDoc._id);
@@ -477,6 +484,32 @@ router.put('/:id', async (req, res) => {
     res.status(500).json({ error: 'Error al actualizar el pedido' });
   }
 });
+
+// PATCH: cambiar el estado del pedido (nuevo ↔ despachado)
+router.patch('/:id/estado', async (req, res) => {
+  try {
+    const { estado } = req.body;
+    if (!['nuevo', 'despachado'].includes(estado)) {
+      return res.status(400).json({ error: 'Estado inválido.' });
+    }
+
+    const pedido = await Pedido.findByIdAndUpdate(
+      req.params.id,
+      { estado },
+      { new: true }
+    );
+
+    if (!pedido) {
+      return res.status(404).json({ error: 'Pedido no encontrado.' });
+    }
+
+    res.json({ message: 'Estado actualizado', pedido });
+  } catch (err) {
+    console.error('Error al cambiar estado del pedido:', err);
+    res.status(500).json({ error: 'Error al cambiar estado.' });
+  }
+});
+
 
 
 module.exports = router;
