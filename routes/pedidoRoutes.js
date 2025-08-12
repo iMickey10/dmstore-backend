@@ -161,6 +161,76 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// Validación rápida de stock del carrito (no descuenta stock, sólo informa)
+router.post('/validate-cart', async (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length) {
+      return res.status(400).json({ ok: false, error: 'No se enviaron items.' });
+    }
+
+    const conflicts = [];
+    const sanitized = [];
+
+    for (const it of items) {
+      const id = String(it.id || '').trim();
+      const qtyReq = Number(it.cantidad || 0);
+
+      if (!id || qtyReq <= 0) continue;
+
+      const prod = await Product.findById(id).lean();
+      if (!prod) {
+        conflicts.push({
+          id,
+          nombre: '(Producto no encontrado)',
+          solicitado: qtyReq,
+          disponible: 0,
+          motivo: 'not_found'
+        });
+        continue;
+      }
+
+      const disponible = Number(prod.stock || 0);
+      if (disponible <= 0) {
+        conflicts.push({
+          id,
+          nombre: prod.name,
+          solicitado: qtyReq,
+          disponible: 0,
+          motivo: 'sin_stock'
+        });
+      } else if (qtyReq > disponible) {
+        conflicts.push({
+          id,
+          nombre: prod.name,
+          solicitado: qtyReq,
+          disponible: disponible,
+          motivo: 'insuficiente'
+        });
+        // puedes proponer ajustar a disponible
+        sanitized.push({ id, cantidad: disponible });
+      } else {
+        sanitized.push({ id, cantidad: qtyReq });
+      }
+    }
+
+    if (conflicts.length) {
+      return res.status(409).json({
+        ok: false,
+        conflicts,
+        // carrito sugerido con cantidades ajustadas (0 elimina)
+        suggestedCart: sanitized
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('validate-cart error:', e);
+    return res.status(500).json({ ok: false, error: 'Error al validar stock.' });
+  }
+});
+
+
 // Crear pedido
 router.post('/', async (req, res) => {
   try {
