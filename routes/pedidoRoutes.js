@@ -219,7 +219,7 @@ router.post('/', async (req, res) => {
       pesoTotal,
       total: Number(totalServidor.toFixed(2)),
       priceMode: mode,                          // guardamos modo vigente
-      tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal' // para listado
+      tipoPrecio: anyPromoUsed ? 'Promo' : 'Normal', // para listado
       estado: 'nuevo' // ⬅️ explícito
     });
 
